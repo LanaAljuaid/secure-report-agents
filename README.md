@@ -1,139 +1,94 @@
-# Secure AI Report Agents
- 
-A multi-agent AI system that turns a topic into a fully researched, written,
-and edited report — protected by a Security Agent that screens every
-request for prompt-injection attempts before it reaches any other agent.
- 
-The project has three layers:
-- **Agent pipeline** (LangGraph) — does the actual work
-- **API** (FastAPI) — exposes the pipeline over HTTP
-- **Frontend** (Streamlit) — a UI that talks to the API
-## How it works
- 
+# secure-report-agents
+
+Multi-agent report generation pipeline with a security gate. LangGraph orchestration, FastAPI backend, Streamlit client.
+
 ```
-User types a topic in Streamlit
-        │
-        ▼
-Streamlit sends a POST request to the FastAPI backend
-        │
-        ▼
-FastAPI runs the LangGraph pipeline:
- 
-   Security Agent  →  screens the topic for prompt-injection attempts
-        │
-        ├── blocked  →  pipeline stops, returns a blocked status
-        │
-        └── approved
-                │
-                ▼
-        Research Agent   → searches the web (Tavily)
-                │
-                ▼
-        Summarization Agent → condenses the research
-                │
-                ▼
-        Writing Agent    → drafts a structured report
-                │
-                ▼
-        Review Agent     → polishes it into the final report
-        │
-        ▼
-FastAPI returns the result as JSON
-        │
-        ▼
-Streamlit displays it (green = approved, red = blocked)
+Security → Research → Summarize → Write → Review
+   │
+   └─ blocked → END (no downstream calls, no LLM/API spend)
 ```
- 
-## Project files
- 
-| File | Purpose |
+
+## Stack
+
+| Layer | Tech |
 |---|---|
-| `security.py` | Pattern-matching guard against prompt-injection / jailbreak attempts |
-| `agent_report.py` | The five agents + the LangGraph pipeline (`report_manager`). Also runnable standalone as a CLI script. |
-| `api.py` | FastAPI backend. Imports the pipeline from `agent_report.py` and exposes it as `POST /generate-report` |
-| `streamlit_app.py` | Web UI. Pure frontend — sends HTTP requests to the API, contains no agent logic |
-| `Dockerfile` / `.dockerignore` | Packages the backend (API) into a container |
-| `requirements.txt` | Backend dependencies |
-| `requirements-streamlit.txt` | Frontend-only dependencies |
-| `.env` (not committed) | Your API keys |
- 
-## Requirements
- 
-- Python 3.11+ (or Docker Desktop, if running the backend in a container)
-- A free [Groq API key](https://console.groq.com/keys)
-- A free [Tavily API key](https://app.tavily.com)
-## Setup
- 
-1. Clone this repository.
-2. Create a `.env` file in the project root (plain text — use Notepad or
-   VS Code, **not Word**):
+| Orchestration | LangGraph (`StateGraph`) |
+| LLM | Groq (`llama-3.3-70b-versatile`) |
+| Search | Tavily |
+| API | FastAPI + Uvicorn |
+| Client | Streamlit |
+| Runtime | Docker (backend) |
+
+## Structure
+
 ```
-   GROQ_API_KEY=your-groq-key-here
-   TAVILY_API_KEY=your-tavily-key-here
+.
+├── security.py              # regex-based prompt-injection guard
+├── agent_report.py          # agents + graph definition, CLI entrypoint
+├── api.py                   # FastAPI wrapper around report_manager
+├── streamlit_app.py         # HTTP client, no agent logic
+├── Dockerfile
+├── requirements.txt          # backend
+├── requirements-streamlit.txt
+└── .env                      # not committed
 ```
-   `.env` is git-ignored on purpose — never commit real API keys.
- 
-## Running it
- 
-### Option A — Run the backend locally, no Docker
- 
+
+## Env
+
+```
+GROQ_API_KEY=
+TAVILY_API_KEY=
+```
+
+## Run
+
 ```bash
+# backend
 pip install -r requirements.txt
-# set your keys as environment variables in this terminal session, e.g.
-# PowerShell: $env:GROQ_API_KEY="..."; $env:TAVILY_API_KEY="..."
-uvicorn api:app --reload
-```
- 
-The API is now live at `http://127.0.0.1:8000`. Visit
-`http://127.0.0.1:8000/docs` for an interactive test page.
- 
-### Option B — Run the backend in Docker
- 
-```bash
+uvicorn api:app --reload          # :8000
+
+# or containerized
 docker build -t report-agent .
 docker run --env-file .env -p 8000:8000 -v ${PWD}/output:/app/output report-agent
-```
- 
-### Then start the frontend (either option above)
- 
-```bash
+
+# client
 pip install -r requirements-streamlit.txt
-streamlit run streamlit_app.py
-```
- 
-Opens automatically at `http://localhost:8501`. Make sure the "FastAPI
-backend URL" in the sidebar matches wherever the API is running
-(`http://localhost:8000` by default).
- 
-### Or skip the UI and call the API directly
- 
-```bash
-curl -X POST http://localhost:8000/generate-report \
-  -H "Content-Type: application/json" \
-  -d '{"topic": "The future of quantum computing"}'
-```
- 
-### Or run just the pipeline from the terminal (no API, no UI)
- 
-```bash
+streamlit run streamlit_app.py    # :8501
+
+# headless
 python agent_report.py
 ```
- 
-## Security Agent
- 
-The Security Agent runs first in every pipeline execution and blocks
-requests containing patterns like:
-- "ignore previous instructions"
-- "reveal system prompt"
-- "jailbreak"
-- "bypass security"
-- "pretend to be" / "act as"
-Blocked requests never reach the Research Agent — no web search or LLM
-call is made, so no API credits are spent on flagged input. The API
-response and Streamlit UI both reflect this with a `blocked` status
-instead of a generated report.
- 
-**Note:** this is pattern-based detection, a reasonable first layer of
-defense but not a complete security solution — it can be bypassed by
-novel phrasing, typos, or other languages. A production system should
-pair this with output-side checks and a hardened system prompt.
+
+## API
+
+`POST /generate-report`
+
+```json
+// request
+{ "topic": "string" }
+
+// response
+{
+  "topic": "string",
+  "security_status": "approved" | "blocked",
+  "blocked_reason": "string | null",
+  "research_notes": "string",
+  "summary": "string",
+  "draft_report": "string",
+  "final_report": "string",
+  "log": ["string"]
+}
+```
+
+`GET /health` → `{"status": "ok"}`
+
+## Security agent
+
+Regex match against known injection/jailbreak phrasing (case-insensitive), checked before `research_agent` runs. Blocked state short-circuits the graph via conditional edge — `security_status`, `blocked_reason`, `final_report` set, no other node executes.
+
+Pattern matching only — bypassable via novel phrasing, typos, other languages. Not a substitute for output-side filtering or a hardened system prompt.
+
+## Notes
+
+- `.env` git-ignored; rotate any key that's touched a chat log or public repo.
+- `streamlit_app.py` not baked into the Docker image — client runs separately from the API container.
