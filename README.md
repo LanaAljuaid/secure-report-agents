@@ -91,4 +91,3 @@ Pattern matching only — bypassable via novel phrasing, typos, other languages.
 ## Notes
 
 - `.env` git-ignored; rotate any key that's touched a chat log or public repo.
-- `streamlit_app.py` not baked into the Docker image — client runs separately from the API container.
